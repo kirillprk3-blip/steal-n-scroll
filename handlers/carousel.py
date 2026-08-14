@@ -23,7 +23,7 @@ from services.queue import clear as queue_clear
 from services.queue import count as queue_count
 from services.queue import take as queue_take
 from services.spending import get_daily_report, is_budget_exceeded
-from services.tikwm import TikWMError, VideoOnlyError, get_tiktok_slides
+from services.tiktok_scraper import TikTokScraperError, VideoOnlyError, get_tiktok_slides
 
 log = logging.getLogger("hoopbot.handlers")
 router = Router()
@@ -111,7 +111,7 @@ async def _process_single(
     """Обрабатывает один TikTok. Возвращает (ok, chunks_of_media, comment)."""
     try:
         slide_urls = await get_tiktok_slides(url)
-    except (VideoOnlyError, TikWMError) as exc:
+    except (VideoOnlyError, TikTokScraperError) as exc:
         return False, [], str(exc)
 
     async def process_one(img_url: str, idx: int):
@@ -120,7 +120,7 @@ async def _process_single(
                 data = await _download(session, img_url)
             meta = await analyze_slide(session, data, _mime(img_url), idx, vision_sem)
             return {"bytes": data, "mime": _mime(img_url), "meta": meta}
-        except (VisionError, TikWMError) as exc:
+        except (VisionError, TikTokScraperError) as exc:
             log.warning("Слайд %d упал: %s", idx, exc)
             return None
         except Exception:
