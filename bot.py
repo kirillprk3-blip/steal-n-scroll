@@ -10,8 +10,11 @@
 
 import asyncio
 import logging
+import os
 import signal
 
+import aiohttp
+from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 
@@ -66,6 +69,20 @@ async def main():
         "Канал-архив: %s", f"ID={config.TARGET_CHANNEL_ID}" if config.TARGET_CHANNEL_ID else "отключён"
     )
 
+    # HTTP health-check сервер (для Render.com — иначе уснёт через 15 мин)
+    port = int(os.getenv("PORT", 10000))
+    health_app = web.Application()
+
+    async def health_check(_request):
+        return web.Response(text="ok", content_type="text/plain")
+
+    health_app.router.add_get("/", health_check)
+    health_runner = web.AppRunner(health_app)
+    await health_runner.setup()
+    site = web.TCPSite(health_runner, "0.0.0.0", port)
+    await site.start()
+    log.info("Health-check сервер на порту %d", port)
+
     # Graceful shutdown: перехватываем сигналы
     stop_event = asyncio.Event()
 
@@ -81,9 +98,10 @@ async def main():
             # Windows не поддерживает add_signal_handler
             pass
 
-    # Запускаем polling с skip_updates=True и поддержкой остановки
+    # Запускаем polling (skip_updates=False — важно! на Render бот может
+    # просыпаться после сна, нужно получить сообщения за период бездействия)
     polling_task = asyncio.create_task(
-        dp.start_polling(bot, skip_updates=True)
+        dp.start_polling(bot, skip_updates=False)
     )
 
     await stop_event.wait()
@@ -93,6 +111,7 @@ async def main():
     except asyncio.CancelledError:
         pass
 
+    await health_runner.cleanup()
     log.info("Бот остановлен.")
 
 

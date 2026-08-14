@@ -2,17 +2,20 @@
 # Render Blueprint — Infrastructure as Code
 # =============================================================================
 # После подключения репозитория добавь вручную в Render Dashboard:
-#   Settings → Environment Variables:
+#   Dashboard → steal-n-scroll-bot → Environment → Add Environment Variable:
 #     BOT_TOKEN
 #     OPENROUTER_API_KEY
 #     TARGET_CHANNEL_ID
-# Значения — в .env или .env.example
+# Значения — в .env.example
+#
+# Потом настроить keep-alive:
+#   https://cron-job.org → every 10 min → http://steal-n-scroll-bot.onrender.com
 # =============================================================================
 
 services:
-  # Background Worker — не спит (в отличие от Web Service), идеально для Telegram бота
-  - type: worker
+  - type: web_service
     name: steal-n-scroll-bot
     runtime: docker
     dockerfilePath: deploy/Dockerfile
     plan: free
+    healthCheckPath: /
