@@ -15,8 +15,11 @@ WORKDIR /app
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-# Устанавливаем Chromium для Playwright
-RUN python3 -m playwright install chromium
+
+# Устанавливаем Chromium в общедоступную директорию (не в ~root)
+ENV PLAYWRIGHT_BROWSERS_PATH=/app/playwright-browsers
+RUN python3 -m playwright install chromium && \
+    chmod -R 755 /app/playwright-browsers
 
 COPY --chown=hoopbot:hoopbot . .
 
