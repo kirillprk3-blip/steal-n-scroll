@@ -1,21 +1,20 @@
 # =============================================================================
 # Render Blueprint — Infrastructure as Code
 # =============================================================================
-# После подключения репозитория добавь вручную в Render Dashboard:
-#   Dashboard → steal-n-scroll-bot → Environment → Add Environment Variable:
-#     BOT_TOKEN
-#     OPENROUTER_API_KEY
-#     TARGET_CHANNEL_ID
-# Значения — в .env.example
-#
-# Потом настроить keep-alive:
-#   https://cron-job.org → every 10 min → http://steal-n-scroll-bot.onrender.com
+# После деплоя:
+#   1. Добавить 3 env vars в Dashboard →
+#      steal-n-scroll-bot → Environment → Add Variable:
+#        BOT_TOKEN
+#        OPENROUTER_API_KEY
+#        TARGET_CHANNEL_ID
+#   2. Настроить keep-alive:
+#      https://cron-job.org → every 10 min → GET на URL сервиса
+#      (URL появится в Dashboard после деплоя)
 # =============================================================================
 
 services:
   - type: web_service
     name: steal-n-scroll-bot
     runtime: docker
-    dockerfilePath: deploy/Dockerfile
     plan: free
     healthCheckPath: /
