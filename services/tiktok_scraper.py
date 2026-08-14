@@ -39,7 +39,8 @@ _USER_AGENT = (
 
 _PHOTO_ID_RE = re.compile(r'/photo/(\d+)')
 _IMAGE_RE = re.compile(
-    r'https?://[^"\'\\\s]*?photomode[^"\'\\\s]*?(?:\.jpg|\.jpeg|\.png|\.webp)'
+    r'https?://[^"\'\\\s<>]*?photomode[^"\'\\\s<>]*?'
+    r'\.(?:jpe?g|png|webp)(?:\?[^"\'\\\s<>]*)?'
 )
 
 
@@ -55,16 +56,18 @@ def _extract_item_id(tiktok_url: str) -> str:
 
 
 def _dedup(urls: list[str]) -> list[str]:
-    """Убирает дубликаты одного слайда на разных CDN (p16/p19)."""
-    seen_hashes = set()
-    result = []
+    """Убирает дубликаты, предпочитает signed URLs (с x-expires=)."""
+    by_key: dict[str, list[str]] = {}
     for url in urls:
-        # Берём последний path-сегмент до ~tplv как ключ дедупа
         m = re.search(r'/([^/]+?)~tplv-photomode', url)
         key = m.group(1) if m else url
-        if key not in seen_hashes:
-            seen_hashes.add(key)
-            result.append(url)
+        by_key.setdefault(key, []).append(url)
+
+    result = []
+    for key, versions in by_key.items():
+        # Предпочитаем URL с x-expires= (подписанный)
+        signed = [v for v in versions if 'x-expires=' in v]
+        result.append(signed[0] if signed else versions[0])
     return result
 
 
