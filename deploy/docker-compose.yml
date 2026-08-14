@@ -1,0 +1,8 @@
+services:
+  hoopbot:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: hoopbot
+    restart: always
+    env_file: ../.env

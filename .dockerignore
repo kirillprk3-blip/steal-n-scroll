@@ -1,0 +1,23 @@
+# Secrets
+.env
+
+# State (recreated on startup)
+data/
+
+# Build artifacts
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Git
+.git/
+
+# Archives
+*.zip
+*.tar.gz

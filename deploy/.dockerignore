@@ -1,0 +1,21 @@
+# Secrets — ни в коем случае не в image
+.env
+.git
+
+# Локальное состояние (пересоздаётся)
+data/
+
+# Системные артефакты
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+Thumbs.db
+
+# Архивы
+*.zip
+*.tar.gz
+
+# IDE
+.vscode/
+.idea/

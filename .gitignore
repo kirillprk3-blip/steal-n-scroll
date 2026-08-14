@@ -1,0 +1,16 @@
+# Secrets (в GitHub не должно быть .env — вставим в Koyeb)
+.env
+
+# Кеши и артефакты
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+Thumbs.db
+data/
+*.zip
+*.tar.gz
+
+# IDE
+.idea/
+.vscode/
