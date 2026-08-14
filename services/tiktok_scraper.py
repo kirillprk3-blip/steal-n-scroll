@@ -84,20 +84,19 @@ async def _scrape_with_playwright(tiktok_url: str) -> list[str]:
             """)
 
             try:
-                await page.goto(tiktok_url, wait_until="domcontentloaded", timeout=30000)
-                await page.wait_for_timeout(5000)
+                await page.goto(tiktok_url, wait_until="domcontentloaded", timeout=45000)
+                await page.wait_for_timeout(8000)
 
-                # Извлекаем все <img> с TikTok CDN
+                # Извлекаем все <img> с TikTok CDN (через img.src, не getAttribute)
                 urls = await page.evaluate("""
                     () => {
                         const imgs = document.querySelectorAll('img');
                         const urls = [];
                         const seen = new Set();
                         for (const img of imgs) {
-                            const src = img.getAttribute('src') || '';
+                            const src = img.src || '';
                             if (src.includes('tiktokcdn') &&
                                 src.includes('photomode') &&
-                                src.includes('.jpeg') &&
                                 !seen.has(src)) {
                                 seen.add(src);
                                 urls.push(src);
