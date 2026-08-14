@@ -1,7 +1,6 @@
 aiogram>=3.7,<4
 aiohttp>=3.9
 aiosqlite>=0.20
-playwright>=1.60
 python-dotenv>=1.0
 
 # Development

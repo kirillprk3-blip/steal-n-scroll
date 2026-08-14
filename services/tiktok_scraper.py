@@ -1,32 +1,35 @@
-"""Парсер TikTok-каруселей через headless Chromium (Playwright).
+"""Парсер TikTok-каруселей через embed-эндпоинт.
 
-Прямой парсинг TikTok вместо использования сторонних API (TikWM и др.),
-которые возвращают 403 на Render.
+Не требует Playwright, X-Bogus или сторонних API.
+Использует https://www.tiktok.com/embed/v2/{id} — endpoint,
+который TikTok отдаёт серверам без JS.
 
 Логика:
-1. Запускает headless Chromium
-2. Загружает страницу TikTok photo mode
-3. Извлекает URL изображений из DOM
-4. Возвращает уникальные слайды
-5. Fallback: если Playwright не установлен — пробует TikWM
+1. Извлекаем item_id из URL (/photo/{id})
+2. Делаем GET на embed/v2/{id}
+3. Извлекаем все URL изображений photomode из HTML
+4. Дедуплицируем (каждый слайд есть на p16 и p19 CDN)
 """
 
 import asyncio
 import logging
+import re
 from typing import Optional
 
-from playwright.async_api import async_playwright
+import aiohttp
 
 from config import config
 
 log = logging.getLogger("tiktok_scraper")
 
-_BROWSER_ARGS = [
-    "--disable-blink-features=AutomationControlled",
-    "--no-sandbox",
-    "--disable-dev-shm-usage",
-    "--disable-setuid-sandbox",
-]
+
+class TikTokScraperError(Exception):
+    """Ошибка парсинга TikTok."""
+
+
+class VideoOnlyError(TikTokScraperError):
+    """Ссылка ведёт на видео, а не на карусель."""
+
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -34,130 +37,89 @@ _USER_AGENT = (
     "Chrome/125.0.0.0 Safari/537.36"
 )
 
+_PHOTO_ID_RE = re.compile(r'/photo/(\d+)')
+_IMAGE_RE = re.compile(
+    r'https?://[^"\'\\\s]*?photomode[^"\'\\\s]*?(?:\.jpg|\.jpeg|\.png|\.webp)'
+)
 
-class TikTokScraperError(Exception):
-    """Ошибка парсинга TikTok через Playwright."""
+
+def _extract_item_id(tiktok_url: str) -> str:
+    """Извлекает ID поста из TikTok URL."""
+    m = _PHOTO_ID_RE.search(tiktok_url)
+    if not m:
+        raise TikTokScraperError(
+            "Не удалось распознать ID поста TikTok. "
+            "Ссылка должна содержать /photo/{id}"
+        )
+    return m.group(1)
 
 
-class VideoOnlyError(TikTokScraperError):
-    """Ссылка ведёт на видео, а не на карусель."""
+def _dedup(urls: list[str]) -> list[str]:
+    """Убирает дубликаты одного слайда на разных CDN (p16/p19)."""
+    seen_hashes = set()
+    result = []
+    for url in urls:
+        # Берём последний path-сегмент до ~tplv как ключ дедупа
+        m = re.search(r'/([^/]+?)~tplv-photomode', url)
+        key = m.group(1) if m else url
+        if key not in seen_hashes:
+            seen_hashes.add(key)
+            result.append(url)
+    return result
 
 
 async def get_tiktok_slides(tiktok_url: str) -> list[str]:
-    """Возвращает список прямых ссылок на JPG слайды.
+    """Возвращает список прямых ссылок на слайды карусели."""
+    item_id = _extract_item_id(tiktok_url)
+    embed_url = f"https://www.tiktok.com/embed/v2/{item_id}"
 
-    Использует headless Chromium для обхода блокировок TikTok.
-    Если Playwright недоступен — пробует TikWM как fallback.
-    """
-    try:
-        return await _scrape_with_playwright(tiktok_url)
-    except TikTokScraperError:
-        raise
-    except Exception as exc:
-        log.warning("Playwright scraper failed: %s", exc)
-        # Fallback: попробовать TikWM
-        from services.tikwm import get_tiktok_slides as tikwm_fallback
-        return await tikwm_fallback(tiktok_url)
+    headers = {
+        "User-Agent": _USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+    }
+    timeout = aiohttp.ClientTimeout(total=config.REQUEST_TIMEOUT)
+
+    last_err: Optional[Exception] = None
+
+    for attempt in range(config.TIKWM_MAX_RETRIES):
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+                async with session.get(embed_url) as resp:
+                    if resp.status != 200:
+                        raise TikTokScraperError(
+                            f"Embed endpoint вернул HTTP {resp.status}."
+                        )
+                    raw = await resp.text()
+
+            # Извлекаем URL изображений
+            urls = _IMAGE_RE.findall(raw)
+            if not urls:
+                # Если нет photomode — возможно это видео, а не карусель
+                raise VideoOnlyError(
+                    "Это не карусель (Photo Mode). "
+                    "Бот принимает только TikTok-карусели."
+                )
+
+            unique = _dedup(urls)
+            log.info("TikTok: %d images from %s", len(unique), tiktok_url)
+            return unique
+
+        except TikTokScraperError:
+            raise
+        except VideoOnlyError:
+            raise
+        except Exception as exc:
+            last_err = exc
+            if attempt == config.TIKWM_MAX_RETRIES - 1:
+                log.warning(
+                    "Failed to fetch embed after %d attempts: %s",
+                    config.TIKWM_MAX_RETRIES, exc,
+                )
+            await asyncio.sleep(min(2 * attempt + 1, 6))
+
+    raise TikTokScraperError(
+        f"Не удалось загрузить данные TikTok после {config.TIKWM_MAX_RETRIES} попыток."
+    )
 
 
-async def _scrape_with_playwright(tiktok_url: str) -> list[str]:
-    """Загружает страницу TikTok через headless Chromium и извлекает слайды."""
-    log.info("Opening TikTok page: %s", tiktok_url)
-
-    try:
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(
-                headless=True,
-                args=_BROWSER_ARGS,
-            )
-            context = await browser.new_context(
-                viewport={"width": 1920, "height": 1080},
-                user_agent=_USER_AGENT,
-                locale="en-US",
-                timezone_id="America/New_York",
-            )
-
-            page = await context.new_page()
-            # Скрываем автоматизацию
-            await page.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            """)
-
-            try:
-                await page.goto(tiktok_url, wait_until="domcontentloaded", timeout=45000)
-                await page.wait_for_selector("img", timeout=15000)
-                await page.wait_for_timeout(3000)
-
-                # Debug: страница и изображения
-                page_title = await page.title()
-                page_url = page.url
-                log.info("Page title: %s", page_title)
-                log.info("Page URL: %s", page_url)
-
-                total_imgs = await page.evaluate("document.querySelectorAll('img').length")
-                log.info("Total img tags: %d", total_imgs)
-
-                # Извлекаем все <img> с TikTok CDN
-                result = await page.evaluate("""
-                    () => {
-                        const imgs = document.querySelectorAll('img');
-                        const debug = [];
-                        const urls = [];
-                        const seen = new Set();
-
-                        for (const img of imgs) {
-                            const src = img.src || '';
-                            const alt = img.alt || '';
-                            const cls = img.className || '';
-                            debug.push({src: src.substring(0, 150), alt: alt.substring(0, 50), cls: cls.substring(0, 40)});
-
-                            if (src.includes('tiktokcdn') &&
-                                src.includes('photomode') &&
-                                !seen.has(src)) {
-                                seen.add(src);
-                                urls.push(src);
-                            }
-                        }
-
-                        return {debug: debug.slice(0, 15), urls: urls};
-                    }
-                """)
-
-                total = len(result.get("urls", []))
-                log.info("Found %d photomode images", total)
-
-                # Логируем несколько первых src для отладки
-                if result.get("debug"):
-                    for d in result["debug"][:8]:
-                        log.info("  img src=%s cls=%s", d["src"][:100], d["cls"])
-
-                urls = result.get("urls", [])
-
-                if not urls:
-                    # Если картинок нет — попробуем другой путь:
-                    # некоторые страницы используют video poster вместо img
-                    log.info("No photomode images. Checking video poster...")
-                    poster = await page.evaluate("""
-                        () => {
-                            const videos = document.querySelectorAll('video');
-                            return Array.from(videos).map(v => v.poster).filter(Boolean);
-                        }
-                    """)
-                    if poster:
-                        log.info("Found video posters: %s", poster)
-                    raise TikTokScraperError(
-                        "Не удалось найти изображения на странице TikTok. "
-                        "Возможно, ссылка ведёт на видео, а не на карусель."
-                    )
-
-                return urls
-
-            finally:
-                await browser.close()
-
-    except TikTokScraperError:
-        raise
-    except Exception as exc:
-        raise TikTokScraperError(
-            f"Ошибка загрузки TikTok через Playwright: {exc}"
-        ) from exc
