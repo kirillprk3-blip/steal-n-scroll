@@ -45,6 +45,10 @@ def _is_transient(exc: Exception) -> bool:
     return False
 
 
+class _RetryableHttpError(Exception):
+    """HTTP-статус, который можно ретраить (403, 429, 5xx)."""
+
+
 def is_tiktok_url(text: str) -> bool:
     return bool(_TIKTOK_URL_RE.search(text))
 
@@ -67,12 +71,23 @@ async def get_tiktok_slides(tiktok_url: str) -> list[str]:
             try:
                 async with session.get(api_url, params=params) as resp:
                     if resp.status != 200:
+                        # 403 (TikTok блокирует TikWM) / 429 (rate limit) / 5xx — ретраим
+                        if resp.status in (403, 429) or resp.status >= 500:
+                            raise _RetryableHttpError(f"HTTP {resp.status}")
                         raise TikWMError(f"Сервер TikWM вернул HTTP {resp.status}.")
                     raw = await resp.text()
                     data = json.loads(raw)
                 break
             except TikWMError:
-                raise  # не ретраим, если сервер явно вернул ошибку
+                raise  # не ретраим, если сервер явно вернул невместную ошибку
+            except _RetryableHttpError as exc:
+                last_err = exc
+                if attempt == config.TIKWM_MAX_RETRIES - 1:
+                    raise TikWMError(
+                        f"Сервер TikWM недоступен после {config.TIKWM_MAX_RETRIES} попыток "
+                        f"(последний ответ: HTTP {exc}). Попробуй позже."
+                    ) from exc
+                await asyncio.sleep(min(2 * attempt + 1, 6))
             except Exception as exc:
                 last_err = exc
                 if not _is_transient(exc) or attempt == config.TIKWM_MAX_RETRIES - 1:
