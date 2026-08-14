@@ -85,16 +85,32 @@ async def _scrape_with_playwright(tiktok_url: str) -> list[str]:
 
             try:
                 await page.goto(tiktok_url, wait_until="domcontentloaded", timeout=45000)
-                await page.wait_for_timeout(8000)
+                await page.wait_for_selector("img", timeout=15000)
+                await page.wait_for_timeout(3000)
 
-                # Извлекаем все <img> с TikTok CDN (через img.src, не getAttribute)
-                urls = await page.evaluate("""
+                # Debug: страница и изображения
+                page_title = await page.title()
+                page_url = page.url
+                log.info("Page title: %s", page_title)
+                log.info("Page URL: %s", page_url)
+
+                total_imgs = await page.evaluate("document.querySelectorAll('img').length")
+                log.info("Total img tags: %d", total_imgs)
+
+                # Извлекаем все <img> с TikTok CDN
+                result = await page.evaluate("""
                     () => {
                         const imgs = document.querySelectorAll('img');
+                        const debug = [];
                         const urls = [];
                         const seen = new Set();
+
                         for (const img of imgs) {
                             const src = img.src || '';
+                            const alt = img.alt || '';
+                            const cls = img.className || '';
+                            debug.push({src: src.substring(0, 150), alt: alt.substring(0, 50), cls: cls.substring(0, 40)});
+
                             if (src.includes('tiktokcdn') &&
                                 src.includes('photomode') &&
                                 !seen.has(src)) {
@@ -102,11 +118,33 @@ async def _scrape_with_playwright(tiktok_url: str) -> list[str]:
                                 urls.push(src);
                             }
                         }
-                        return urls;
+
+                        return {debug: debug.slice(0, 15), urls: urls};
                     }
                 """)
 
+                total = len(result.get("urls", []))
+                log.info("Found %d photomode images", total)
+
+                # Логируем несколько первых src для отладки
+                if result.get("debug"):
+                    for d in result["debug"][:8]:
+                        log.info("  img src=%s cls=%s", d["src"][:100], d["cls"])
+
+                urls = result.get("urls", [])
+
                 if not urls:
+                    # Если картинок нет — попробуем другой путь:
+                    # некоторые страницы используют video poster вместо img
+                    log.info("No photomode images. Checking video poster...")
+                    poster = await page.evaluate("""
+                        () => {
+                            const videos = document.querySelectorAll('video');
+                            return Array.from(videos).map(v => v.poster).filter(Boolean);
+                        }
+                    """)
+                    if poster:
+                        log.info("Found video posters: %s", poster)
                     raise TikTokScraperError(
                         "Не удалось найти изображения на странице TikTok. "
                         "Возможно, ссылка ведёт на видео, а не на карусель."
