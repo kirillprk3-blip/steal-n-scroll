@@ -1,0 +1,18 @@
+# =============================================================================
+# Render Blueprint — Infrastructure as Code
+# =============================================================================
+# После подключения репозитория добавь вручную в Render Dashboard:
+#   Settings → Environment Variables:
+#     BOT_TOKEN
+#     OPENROUTER_API_KEY
+#     TARGET_CHANNEL_ID
+# Значения — в .env или .env.example
+# =============================================================================
+
+services:
+  # Background Worker — не спит (в отличие от Web Service), идеально для Telegram бота
+  - type: worker
+    name: steal-n-scroll-bot
+    runtime: docker
+    dockerfilePath: deploy/Dockerfile
+    plan: free
