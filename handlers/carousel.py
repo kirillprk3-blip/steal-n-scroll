@@ -63,10 +63,21 @@ def _mime(url: str) -> str:
     return "image/jpeg"
 
 
+def _escape_md(text: str) -> str:
+    """Экранирует спецсимволы Markdown (_ * ` [) обратным слешем."""
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, "\\" + ch)
+    return text
+
+
 def _caption(meta: dict, idx: int) -> str:
-    parts = [f"[Слайд №{idx}] {meta['translation']}".strip()]
-    if meta.get("design"):
-        parts.append("💡 " + meta["design"])
+    translation = _escape_md(meta.get("translation", "")).strip()
+    design = _escape_md(meta.get("design", "")).strip()
+
+    parts = [f"**[Слайд №{idx}]**\n{translation}"]
+    if design:
+        parts.append(f"**💡 Подсказки по композиции:**\n{design}")
+
     return "\n\n".join(parts)[: config.CAPTION_LIMIT]
 
 
@@ -114,11 +125,13 @@ async def _send_single_photo(
                 chat_id=config.TARGET_CHANNEL_ID,
                 photo=photo,
                 caption=caption[: config.CAPTION_LIMIT],
+                parse_mode="Markdown",
             )
         else:
             await message.answer_photo(
                 photo=photo,
                 caption=caption[: config.CAPTION_LIMIT],
+                parse_mode="Markdown",
             )
         return True
     except TelegramBadRequest as exc:
@@ -140,12 +153,14 @@ async def _send_promo(message: Message) -> bool:
         await message.answer_photo(
             photo=photo,
             caption=config.PROMO_CAPTION,
+            parse_mode="Markdown",
         )
         if config.TARGET_CHANNEL_ID:
             await message.bot.send_photo(
                 chat_id=config.TARGET_CHANNEL_ID,
                 photo=photo,
                 caption=config.PROMO_CAPTION,
+                parse_mode="Markdown",
             )
         return True
     except Exception as exc:
