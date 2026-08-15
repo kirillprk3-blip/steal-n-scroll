@@ -3,6 +3,11 @@ aiohttp>=3.9
 aiosqlite>=0.20
 python-dotenv>=1.0
 
+# Inpainting: OCR + LaMa ONNX
+rapidocr-onnxruntime>=1.4
+onnxruntime>=1.18
+opencv-contrib-python-headless>=4.9
+
 # Development
 pytest>=8.0
 pytest-asyncio>=0.24

@@ -21,6 +21,7 @@ from aiogram.types import BufferedInputFile, Message
 from config import config
 from services.ai_vision import VisionError, analyze_slide
 from services.dedup import mark_processed
+from services.inpainter import clean_image_text_async
 from services.queue import clear as queue_clear
 from services.queue import count as queue_count
 from services.queue import peek as queue_peek
@@ -173,10 +174,11 @@ async def _process_single(
     url: str,
     vision_sem: asyncio.Semaphore,
     download_sem: asyncio.Semaphore,
+    inpaint_sem: asyncio.Semaphore,
 ) -> tuple[bool, list, str]:
     """Обрабатывает один TikTok. Возвращает (ok, slides, comment).
 
-    slides — список словарей с ключами bytes/mime/meta.
+    slides — список словарей с ключами bytes(cleaned)/mime/meta.
     """
     try:
         slide_urls = await get_tiktok_slides(url)
@@ -188,7 +190,10 @@ async def _process_single(
             async with download_sem:
                 data = await _download(session, img_url)
             meta = await analyze_slide(session, data, _mime(img_url), idx, vision_sem)
-            return {"bytes": data, "mime": _mime(img_url), "meta": meta}
+            # Inpainting: удаляем текст, оставляем очищенное фото
+            async with inpaint_sem:
+                clean_bytes = await clean_image_text_async(data)
+            return {"bytes": clean_bytes, "mime": _mime(img_url), "meta": meta}
         except (VisionError, TikTokScraperError) as exc:
             log.warning("Слайд %d упал: %s", idx, exc)
             return None
@@ -287,6 +292,7 @@ async def cmd_run(message: Message):
     urls = await queue_peek(n)
     vision_sem = asyncio.Semaphore(config.MAX_PARALLEL)
     download_sem = asyncio.Semaphore(config.MAX_DOWNLOADS)
+    inpaint_sem = asyncio.Semaphore(1)  # inpainting: последовательно, один за другим (CPU-bound)
 
     done_ok = 0
     done_fail = 0
@@ -295,7 +301,7 @@ async def cmd_run(message: Message):
         async with aiohttp.ClientSession() as session:
             for i, url in enumerate(urls, start=1):
                 ok, slides, comment = await _process_single(
-                    session, url, vision_sem, download_sem
+                    session, url, vision_sem, download_sem, inpaint_sem
                 )
                 if ok:
                     await _post(message, slides)
