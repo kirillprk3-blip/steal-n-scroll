@@ -191,8 +191,15 @@ async def _process_single(
                 data = await _download(session, img_url)
             meta = await analyze_slide(session, data, _mime(img_url), idx, vision_sem)
             # Inpainting: удаляем текст, оставляем очищенное фото
+            log.info("Слайд %d: запуск инпейнтинга (%d байт)", idx, len(data))
             async with inpaint_sem:
                 clean_bytes = await clean_image_text_async(data)
+            if len(clean_bytes) != len(data):
+                log.info("Слайд %d: инпейнтинг применился (%d → %d байт)",
+                          idx, len(data), len(clean_bytes))
+            else:
+                log.warning("Слайд %d: инпейнтинг НЕ применился (размер не изменился: %d байт)",
+                            idx, len(data))
             return {"bytes": clean_bytes, "mime": _mime(img_url), "meta": meta}
         except (VisionError, TikTokScraperError) as exc:
             log.warning("Слайд %d упал: %s", idx, exc)
