@@ -2,6 +2,8 @@
 
 Ссылки, скинутые боту, накапливаются в таблице queue БД. Команда /run берёт
 до N (максимум 10) и обрабатывает. Разрешение дублей — в dedup.
+
+Удаление из очереди — только после успешной обработки или явной ошибки.
 """
 
 from services.db import get_conn
@@ -29,7 +31,6 @@ async def add(url: str) -> tuple[bool, str]:
     except Exception:
         count = await _count(db)
         return False, f"уже в очереди. В очереди: {count}"
-    # Подключение не закрываем — глобальное
 
 
 async def count() -> int:
@@ -60,6 +61,31 @@ async def take(n: int) -> list[str]:
         )
         await db.commit()
     return urls
+
+
+async def peek(n: int) -> list[str]:
+    """Читает до n ссылок из начала очереди БЕЗ удаления.
+
+    Returns:
+        Список URL в порядке FIFO.
+    """
+    db = await get_conn()
+    rows = await db.execute_fetchall(
+        "SELECT url FROM queue ORDER BY id ASC LIMIT ?", (n,)
+    )
+    return [row[0] for row in rows]
+
+
+async def remove(url: str) -> None:
+    """Удаляет одну ссылку из очереди.
+
+    Args:
+        url: URL для удаления (нормализуется автоматически).
+    """
+    u = url.strip().lower()
+    db = await get_conn()
+    await db.execute("DELETE FROM queue WHERE url = ?", (u,))
+    await db.commit()
 
 
 async def clear() -> int:

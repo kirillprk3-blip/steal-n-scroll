@@ -2,8 +2,10 @@
 
 Поток: бот отвечает на всё — справка, команды, статус очереди.
 Ссылки на TikTok копятся в очереди; /run N берёт до N (макс 10) и обрабатывает:
-парсинг -> параллельный Vision (в памяти) -> чанкинг по 10 -> промо в финале
--> публикация в чат и дублирование в канал-архив.
+парсинг -> параллельный Vision (в памяти) -> публикация каждого слайда отдельным
+сообщением с подписью под фото -> дублирование в канал-архив.
+
+Удаление из очереди — строго после завершения отправки или фиксации ошибки.
 """
 
 import asyncio
@@ -14,14 +16,15 @@ import aiohttp
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
-from aiogram.types import BufferedInputFile, InputMediaPhoto, Message
+from aiogram.types import BufferedInputFile, Message
 
 from config import config
 from services.ai_vision import VisionError, analyze_slide
 from services.dedup import mark_processed
 from services.queue import clear as queue_clear
 from services.queue import count as queue_count
-from services.queue import take as queue_take
+from services.queue import peek as queue_peek
+from services.queue import remove as queue_remove
 from services.spending import get_daily_report, is_budget_exceeded
 from services.tiktok_scraper import TikTokScraperError, VideoOnlyError, get_tiktok_slides
 
@@ -67,17 +70,6 @@ def _caption(meta: dict, idx: int) -> str:
     return "\n\n".join(parts)[: config.CAPTION_LIMIT]
 
 
-def _promo_media() -> InputMediaPhoto | None:
-    if not os.path.exists(config.PROMO_IMAGE_PATH):
-        return None
-    with open(config.PROMO_IMAGE_PATH, "rb") as fh:
-        data = fh.read()
-    return InputMediaPhoto(
-        media=BufferedInputFile(data, filename="promo.jpg"),
-        caption=config.PROMO_CAPTION,
-    )
-
-
 async def _safe_edit(
     message: Message, text: str, log_on_fail: bool = True
 ) -> bool:
@@ -102,13 +94,75 @@ async def _download(session: aiohttp.ClientSession, url: str) -> bytes:
         return await resp.read()
 
 
+async def _send_single_photo(
+    message: Message,
+    data: dict,
+    slide_num: int,
+    target: str = "chat",
+) -> bool:
+    """Отправляет одно фото с подписью. target='chat'|'channel'.
+
+    Возвращает True при успехе, False при ошибке.
+    """
+    ext = "png" if data["mime"] == "image/png" else "jpg"
+    photo = BufferedInputFile(data["bytes"], filename=f"slide_{slide_num}.{ext}")
+    caption = _caption(data["meta"], slide_num)
+
+    try:
+        if target == "channel" and config.TARGET_CHANNEL_ID:
+            await message.bot.send_photo(
+                chat_id=config.TARGET_CHANNEL_ID,
+                photo=photo,
+                caption=caption[: config.CAPTION_LIMIT],
+            )
+        else:
+            await message.answer_photo(
+                photo=photo,
+                caption=caption[: config.CAPTION_LIMIT],
+            )
+        return True
+    except TelegramBadRequest as exc:
+        dest = "канал" if target == "channel" else "чат"
+        log.error("Ошибка отправки фото #%d в %s: %s", slide_num, dest, exc)
+        if target == "chat":
+            await message.answer(f"⚠️ Ошибка отправки слайда #{slide_num}: {exc}")
+        return False
+
+
+async def _send_promo(message: Message) -> bool:
+    """Отправляет промо-слайд отдельным фото (без caption)."""
+    if not os.path.exists(config.PROMO_IMAGE_PATH):
+        return False
+    try:
+        with open(config.PROMO_IMAGE_PATH, "rb") as fh:
+            data = fh.read()
+        photo = BufferedInputFile(data, filename="promo.jpg")
+        await message.answer_photo(
+            photo=photo,
+            caption=config.PROMO_CAPTION,
+        )
+        if config.TARGET_CHANNEL_ID:
+            await message.bot.send_photo(
+                chat_id=config.TARGET_CHANNEL_ID,
+                photo=photo,
+                caption=config.PROMO_CAPTION,
+            )
+        return True
+    except Exception as exc:
+        log.warning("Не удалось отправить промо: %s", exc)
+        return False
+
+
 async def _process_single(
     session: aiohttp.ClientSession,
     url: str,
     vision_sem: asyncio.Semaphore,
     download_sem: asyncio.Semaphore,
 ) -> tuple[bool, list, str]:
-    """Обрабатывает один TikTok. Возвращает (ok, chunks_of_media, comment)."""
+    """Обрабатывает один TikTok. Возвращает (ok, slides, comment).
+
+    slides — список словарей с ключами bytes/mime/meta.
+    """
     try:
         slide_urls = await get_tiktok_slides(url)
     except (VideoOnlyError, TikTokScraperError) as exc:
@@ -134,60 +188,29 @@ async def _process_single(
     if not ok:
         return False, [], "не удалось обработать ни один слайд карусели"
 
-    media = []
-    for idx, item in enumerate(ok, start=1):
-        ext = "png" if item["mime"] == "image/png" else "jpg"
-        photo = InputMediaPhoto(
-            media=BufferedInputFile(item["bytes"], filename=f"slide_{idx}.{ext}"),
-            caption=_caption(item["meta"], idx),
-        )
-        media.append(photo)
-
-    promo = _promo_media()
-    if promo:
-        media.append(promo)
-
-    chunks = [media[i : i + config.BATCH_SIZE] for i in range(0, len(media), config.BATCH_SIZE)]
     failed = len(results) - len(ok)
-    return True, chunks, f"{len(ok)} слайдов" + (f", не удалось {failed}" if failed else "")
+    return True, ok, f"{len(ok)} слайдов" + (f", не удалось {failed}" if failed else "")
 
 
-async def _send_chunk(
-    message: Message, chunk: list, target: str = "chat"
-) -> bool:
-    """Отправляет один чанк медиа-группы. target='chat'|'channel'.
+async def _post(message: Message, slides: list) -> tuple[int, int]:
+    """Отправляет слайды по одному в чат и канал.
 
-    Возвращает True при успехе, False при ошибке (ошибка логируется, в чат
-    не пишется, если это канал — чтобы не путать пользователя).
+    Returns:
+        (chat_ok, channel_ok) — количество успешно отправленных фото.
     """
-    try:
-        if target == "channel" and config.TARGET_CHANNEL_ID:
-            await message.bot.send_media_group(
-                chat_id=config.TARGET_CHANNEL_ID, media=chunk
-            )
-        else:
-            await message.answer_media_group(media=chunk)
-        return True
-    except TelegramBadRequest as exc:
-        dest = "канал" if target == "channel" else "чат"
-        log.error("Ошибка отправки в %s: %s", dest, exc)
-        if target == "chat":
-            await message.answer(f"⚠️ Telegram отклонил отправку: {exc}")
-        return False
-
-
-async def _post(message: Message, chunks: list) -> tuple[int, int]:
-    """Публикует чанки в чат и канал. Возвращает (chat_ok, channel_ok)."""
     chat_ok = 0
-    for chunk in chunks:
-        if await _send_chunk(message, chunk, target="chat"):
+    for idx, slide in enumerate(slides, start=1):
+        if await _send_single_photo(message, slide, idx, target="chat"):
             chat_ok += 1
 
     channel_ok = 0
     if config.TARGET_CHANNEL_ID:
-        for chunk in chunks:
-            if await _send_chunk(message, chunk, target="channel"):
+        for idx, slide in enumerate(slides, start=1):
+            if await _send_single_photo(message, slide, idx, target="channel"):
                 channel_ok += 1
+
+    # Промо — отдельным фото в конце
+    await _send_promo(message)
 
     return chat_ok, channel_ok
 
@@ -246,7 +269,7 @@ async def cmd_run(message: Message):
         return
 
     status = await message.answer(f"🔄 Обрабатываю до {n} роликов из очереди…")
-    urls = await queue_take(n)
+    urls = await queue_peek(n)
     vision_sem = asyncio.Semaphore(config.MAX_PARALLEL)
     download_sem = asyncio.Semaphore(config.MAX_DOWNLOADS)
 
@@ -256,14 +279,16 @@ async def cmd_run(message: Message):
     try:
         async with aiohttp.ClientSession() as session:
             for i, url in enumerate(urls, start=1):
-                ok, chunks, comment = await _process_single(
+                ok, slides, comment = await _process_single(
                     session, url, vision_sem, download_sem
                 )
                 if ok:
-                    await _post(message, chunks)
+                    await _post(message, slides)
+                    await queue_remove(url)
                     await mark_processed(url)
                     done_ok += 1
                 else:
+                    await queue_remove(url)  # удаляем и при ошибке
                     done_fail += 1
                     await message.answer(f"❌ {url}\n{comment}")
                 await _safe_edit(
@@ -274,7 +299,7 @@ async def cmd_run(message: Message):
         log.exception("Критическая ошибка в /run: обработано %d, не удалось %d", done_ok, done_fail)
         await message.answer(
             f"⚠️ Бот упал с ошибкой. Обработано: {done_ok}, с ошибкой: {done_fail}.\n"
-            "Необработанные ссылки не потеряны — напиши /run снова, проблема устранена."
+            "Необработанные ссылки НЕ удалены из очереди — напиши /run снова."
         )
 
     await _safe_edit(
@@ -285,8 +310,6 @@ async def cmd_run(message: Message):
 
 @router.message(F.text.contains("tiktok.com"))
 async def enqueue_tiktok(message: Message):
-    from services.queue import add as queue_add
-
     from services.queue import add as queue_add
 
     added, note = await queue_add(message.text.strip())
