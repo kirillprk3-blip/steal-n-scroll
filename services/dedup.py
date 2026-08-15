@@ -15,22 +15,16 @@ def normalize(url: str) -> str:
 async def is_processed(url: str) -> bool:
     u = normalize(url)
     db = await get_conn()
-    try:
-        rows = await db.execute_fetchall(
-            "SELECT 1 FROM processed WHERE url = ?", (u,)
-        )
-        return len(rows) > 0
-    finally:
-        await db.close()
+    rows = await db.execute_fetchall(
+        "SELECT 1 FROM processed WHERE url = ?", (u,)
+    )
+    return len(rows) > 0
 
 
 async def mark_processed(url: str) -> None:
     u = normalize(url)
     db = await get_conn()
-    try:
-        await db.execute(
-            "INSERT OR IGNORE INTO processed (url) VALUES (?)", (u,)
-        )
-        await db.commit()
-    finally:
-        await db.close()
+    await db.execute(
+        "INSERT OR IGNORE INTO processed (url) VALUES (?)", (u,)
+    )
+    await db.commit()

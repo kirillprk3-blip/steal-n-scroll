@@ -20,7 +20,7 @@ from aiogram.types import BotCommand
 
 from config import config
 from handlers.carousel import router
-from services.db import init_db, migrate_from_json
+from services.db import close_db, init_db, migrate_from_json
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,7 +51,8 @@ async def main():
     bot = Bot(token=config.BOT_TOKEN)
     dp = Dispatcher()
 
-    # Регистрируем shutdown hook — закрываем сессии
+    # Lifecycle: SQLite (init_db вызывается явно до polling, close_db — на shutdown)
+    dp.shutdown.register(close_db)
     dp.shutdown.register(bot.session.close)
 
     dp.include_router(router)

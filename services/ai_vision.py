@@ -170,7 +170,7 @@ async def analyze_slide(session, image_bytes: bytes, mime: str, slide_num: int, 
                 # Трекинг стоимости
                 prompt_tokens = usage.get("prompt_tokens", 0)
                 completion_tokens = usage.get("completion_tokens", 0)
-                usage_info = track_usage(prompt_tokens, completion_tokens, model)
+                usage_info = await track_usage(prompt_tokens, completion_tokens, model)
                 result["_usage"] = {
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,

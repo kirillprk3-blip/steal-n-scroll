@@ -22,26 +22,19 @@ async def add(url: str) -> tuple[bool, str]:
 
     db = await get_conn()
     try:
-        cursor = await db.execute(
-            "INSERT INTO queue (url) VALUES (?)", (u,)
-        )
+        await db.execute("INSERT INTO queue (url) VALUES (?)", (u,))
         await db.commit()
         count = await _count(db)
         return True, f"в очереди: {count}"
     except Exception:
-        # UNIQUE violation = уже в очереди
         count = await _count(db)
         return False, f"уже в очереди. В очереди: {count}"
-    finally:
-        await db.close()
+    # Подключение не закрываем — глобальное
 
 
 async def count() -> int:
     db = await get_conn()
-    try:
-        return await _count(db)
-    finally:
-        await db.close()
+    return await _count(db)
 
 
 async def _count(db) -> int:
@@ -56,29 +49,23 @@ async def take(n: int) -> list[str]:
     Операция атомарна — в транзакции.
     """
     db = await get_conn()
-    try:
-        rows = await db.execute_fetchall(
-            "SELECT url FROM queue ORDER BY id ASC LIMIT ?", (n,)
+    rows = await db.execute_fetchall(
+        "SELECT url FROM queue ORDER BY id ASC LIMIT ?", (n,)
+    )
+    urls = [row[0] for row in rows]
+    if urls:
+        placeholders = ",".join("?" for _ in urls)
+        await db.execute(
+            f"DELETE FROM queue WHERE url IN ({placeholders})", urls
         )
-        urls = [row[0] for row in rows]
-        if urls:
-            placeholders = ",".join("?" for _ in urls)
-            await db.execute(
-                f"DELETE FROM queue WHERE url IN ({placeholders})", urls
-            )
-            await db.commit()
-        return urls
-    finally:
-        await db.close()
+        await db.commit()
+    return urls
 
 
 async def clear() -> int:
     db = await get_conn()
-    try:
-        row = await db.execute_fetchall("SELECT COUNT(*) as cnt FROM queue")
-        n = row[0][0] if row else 0
-        await db.execute("DELETE FROM queue")
-        await db.commit()
-        return n
-    finally:
-        await db.close()
+    row = await db.execute_fetchall("SELECT COUNT(*) as cnt FROM queue")
+    n = row[0][0] if row else 0
+    await db.execute("DELETE FROM queue")
+    await db.commit()
+    return n

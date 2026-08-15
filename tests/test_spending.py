@@ -1,8 +1,10 @@
-"""Tests for spending tracker module.
+"""Tests for spending tracker module (SQLite-backed).
 
-Tests are isolated: conftest resets state between tests, and the module
-uses file-based storage but tests don't depend on it directly.
+Tests are isolated: conftest resets state between tests.
+All spending functions are now async.
 """
+
+import pytest
 
 from services.spending import (
     calculate_cost,
@@ -13,6 +15,8 @@ from services.spending import (
 
 
 class TestCalculateCost:
+    """calculate_cost — чистая синхронная функция, не требует async."""
+
     def test_gemini_flash_known(self):
         """google/gemini-2.5-flash: $0.30/M in, $2.50/M out."""
         cost = calculate_cost(1000, 500, "google/gemini-2.5-flash")
@@ -32,39 +36,39 @@ class TestCalculateCost:
 
 
 class TestTrackUsage:
-    def test_track_returns_cost(self):
-        result = track_usage(1000, 500, "google/gemini-2.5-flash")
+    async def test_track_returns_cost(self):
+        result = await track_usage(1000, 500, "google/gemini-2.5-flash")
         assert "cost_usd" in result
         assert result["prompt_tokens"] == 1000
         assert result["completion_tokens"] == 500
         assert result["cost_usd"] > 0
 
-    def test_track_daily_accumulates(self):
-        track_usage(1000, 500, "google/gemini-2.5-flash")
-        track_usage(2000, 300, "google/gemini-2.5-flash")
-        assert is_budget_exceeded(100_000) is False  # 1000$ лимит — далеко
+    async def test_track_daily_accumulates(self):
+        await track_usage(1000, 500, "google/gemini-2.5-flash")
+        await track_usage(2000, 300, "google/gemini-2.5-flash")
+        assert await is_budget_exceeded(100_000) is False
 
 
 class TestIsBudgetExceeded:
-    def test_zero_budget_no_limit(self):
+    async def test_zero_budget_no_limit(self):
         """0 = без лимита, никогда не превышен."""
-        assert is_budget_exceeded(0) is False
+        assert await is_budget_exceeded(0) is False
 
-    def test_negative_budget_no_limit(self):
-        assert is_budget_exceeded(-1) is False
+    async def test_negative_budget_no_limit(self):
+        assert await is_budget_exceeded(-1) is False
 
-    def test_exceeded_after_usage(self):
-        track_usage(100_000, 50_000, "google/gemini-2.5-flash")
-        assert is_budget_exceeded(10) is True  # 10 центов лимит
+    async def test_exceeded_after_usage(self):
+        await track_usage(100_000, 50_000, "google/gemini-2.5-flash")
+        assert await is_budget_exceeded(10) is True
 
 
 class TestGetDailyReport:
-    def test_report_no_spending(self):
-        report = get_daily_report()
+    async def test_report_no_spending(self):
+        report = await get_daily_report()
         assert "не было" in report
 
-    def test_report_after_tracking(self):
-        track_usage(1000, 500, "google/gemini-2.5-flash")
-        report = get_daily_report()
+    async def test_report_after_tracking(self):
+        await track_usage(1000, 500, "google/gemini-2.5-flash")
+        report = await get_daily_report()
         assert "запросов" in report
         assert "токенов" in report

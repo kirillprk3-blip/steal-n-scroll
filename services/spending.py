@@ -1,20 +1,20 @@
 """Spending tracker: дневной лимит бюджета OpenRouter.
 
-Хранит посуточный usage в data/spending.json.
+Хранит посуточный usage в таблице spending SQLite.
 При достижении DAILY_BUDGET_CENTS — блокирует обработку новых роликов.
+
+Таймзона: Europe/Moscow (UTC+3) для корректного сброса лимита в полночь по Москве.
 """
 
-import json
-import os
-from datetime import date
-from typing import Dict
+from datetime import datetime
+from typing import Optional
+from zoneinfo import ZoneInfo
 
-_DATA_DIR = "data"
-_PATH = os.path.join(_DATA_DIR, "spending.json")
+from services.db import get_conn
 
 # Цены моделей: input/output за 1M токенов в USD
 # Источник: openrouter.ai/models на момент разработки
-_MODEL_PRICES: Dict[str, tuple[float, float]] = {
+_MODEL_PRICES: dict[str, tuple[float, float]] = {
     "google/gemini-2.5-flash": (0.30, 2.50),
     "google/gemini-2.5-pro": (2.50, 10.00),
     "qwen/qwen-2.5-vl-72b-instruct": (0.30, 0.60),
@@ -26,30 +26,36 @@ _MODEL_PRICES: Dict[str, tuple[float, float]] = {
     "anthropic/claude-3-haiku": (0.25, 1.25),
 }
 
+_TIMEZONE = ZoneInfo("Europe/Moscow")
+
 
 def _default_price(model: str) -> tuple[float, float]:
     """Fallback цена для неизвестной модели — средняя."""
     return (1.0, 3.0)
 
 
-def _load() -> dict:
-    if not os.path.exists(_PATH):
-        return {}
-    try:
-        with open(_PATH, "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    except Exception:
-        return {}
-
-
-def _save(data: dict) -> None:
-    os.makedirs(_DATA_DIR, exist_ok=True)
-    with open(_PATH, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False, indent=2)
-
-
 def _today_key() -> str:
-    return date.today().isoformat()  # "2026-08-14"
+    """Возвращает сегодняшнюю дату в Europe/Moscow."""
+    return datetime.now(_TIMEZONE).strftime("%Y-%m-%d")
+
+
+async def _fetch_day(date_key: Optional[str] = None) -> dict:
+    """Достаёт запись дня из БД. Возвращает dict с ключами или пустой."""
+    key = date_key or _today_key()
+    db = await get_conn()
+    row = await db.execute_fetchall(
+        "SELECT prompt_tokens, completion_tokens, cost_usd, requests "
+        "FROM spending WHERE date = ?",
+        (key,),
+    )
+    if row:
+        return {
+            "prompt_tokens": row[0][0],
+            "completion_tokens": row[0][1],
+            "cost_usd": row[0][2],
+            "requests": row[0][3],
+        }
+    return {}
 
 
 def calculate_cost(prompt_tokens: int, completion_tokens: int, model: str) -> float:
@@ -68,22 +74,28 @@ def calculate_cost(prompt_tokens: int, completion_tokens: int, model: str) -> fl
     return cost
 
 
-def track_usage(prompt_tokens: int, completion_tokens: int, model: str) -> dict:
-    """Записывает usage в дневной лог.
+async def track_usage(prompt_tokens: int, completion_tokens: int, model: str) -> dict:
+    """Записывает usage в дневной лог (транзакция SQLite).
 
     Returns:
         Словарь с {prompt_tokens, completion_tokens, cost_usd} за этот запрос
     """
     cost = calculate_cost(prompt_tokens, completion_tokens, model)
-    data = _load()
     key = _today_key()
-    day = data.get(key, {"prompt_tokens": 0, "completion_tokens": 0, "cost_usd": 0.0, "requests": 0})
-    day["prompt_tokens"] += prompt_tokens
-    day["completion_tokens"] += completion_tokens
-    day["cost_usd"] = round(day["cost_usd"] + cost, 6)
-    day["requests"] += 1
-    data[key] = day
-    _save(data)
+
+    db = await get_conn()
+    await db.execute(
+        """INSERT INTO spending (date, prompt_tokens, completion_tokens, cost_usd, requests)
+           VALUES (?, ?, ?, ?, 1)
+           ON CONFLICT(date) DO UPDATE SET
+               prompt_tokens = prompt_tokens + excluded.prompt_tokens,
+               completion_tokens = completion_tokens + excluded.completion_tokens,
+               cost_usd = cost_usd + excluded.cost_usd,
+               requests = requests + 1""",
+        (key, prompt_tokens, completion_tokens, round(cost, 6)),
+    )
+    await db.commit()
+
     return {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
@@ -91,24 +103,22 @@ def track_usage(prompt_tokens: int, completion_tokens: int, model: str) -> dict:
     }
 
 
-def get_daily_spent_cents() -> float:
+async def get_daily_spent_cents() -> float:
     """Возвращает, сколько $ЦЕНТОВ потрачено сегодня."""
-    data = _load()
-    day = data.get(_today_key(), {})
+    day = await _fetch_day()
     return round(day.get("cost_usd", 0.0) * 100, 4)
 
 
-def is_budget_exceeded(budget_cents: float) -> bool:
+async def is_budget_exceeded(budget_cents: float) -> bool:
     """Проверяет, превышен ли дневной лимит."""
     if budget_cents <= 0:
         return False  # 0 = без лимита
-    return get_daily_spent_cents() >= budget_cents
+    return await get_daily_spent_cents() >= budget_cents
 
 
-def get_daily_report() -> str:
+async def get_daily_report() -> str:
     """Краткий отчёт о расходах за сегодня."""
-    data = _load()
-    day = data.get(_today_key(), {})
+    day = await _fetch_day()
     if not day:
         return "Сегодня расходов не было."
     return (

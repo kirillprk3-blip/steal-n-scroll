@@ -14,18 +14,20 @@ async def isolate_state(tmp_path, monkeypatch):
     - Перенаправляем _DB_PATH в tmp/data/hoopbot.db
     - Инициализируем таблицы
     """
-    from services import db, spending
+    from services import db
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
 
     monkeypatch.setattr(db, "_DB_PATH", str(data_dir / "hoopbot.db"))
-    monkeypatch.setattr(spending, "_PATH", str(data_dir / "spending.json"))
 
     # Инициализируем БД
     await db.init_db()
 
     yield
+
+    # Закрываем глобальное подключение, чтобы следующий тест начал с чистого
+    await db.close_db()
 
 
 @pytest.fixture

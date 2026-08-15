@@ -216,7 +216,7 @@ async def cmd_clear(message: Message):
 
 @router.message(Command("budget"))
 async def cmd_budget(message: Message):
-    report = get_daily_report()
+    report = await get_daily_report()
     budget_info = f"Дневной лимит: {config.DAILY_BUDGET_CENTS}¢"
     await message.answer(f"{report}\n{budget_info}")
 
@@ -237,10 +237,10 @@ async def cmd_run(message: Message):
         return
 
     # Проверка дневного бюджета OpenRouter
-    if is_budget_exceeded(config.DAILY_BUDGET_CENTS):
+    if await is_budget_exceeded(config.DAILY_BUDGET_CENTS):
         await message.answer(
             f"⚠️ Дневной бюджет ${config.DAILY_BUDGET_CENTS / 100:.2f} исчерпан.\n"
-            f"{get_daily_report()}\n"
+            f"{await get_daily_report()}\n"
             "Лимит сбросится завтра. /budget для деталей."
         )
         return
