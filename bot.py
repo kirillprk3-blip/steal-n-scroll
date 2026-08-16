@@ -21,7 +21,14 @@ from aiogram.types import BotCommand
 from config import config
 from handlers.carousel import router
 from services.db import close_db, init_db, migrate_from_json
-from services.inpainter import preload_models
+
+try:
+    from services.inpainter import preload_models
+    _INPAINT_AVAILABLE = True
+except Exception as e:
+    preload_models = None
+    _INPAINT_AVAILABLE = False
+    logging.getLogger("hoopbot").warning("Inpainter не загружен: %s", e)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -109,19 +116,23 @@ async def main():
 
     # Предзагрузка моделей (LaMa 208MB, OCR) — фоном, не блокируя поллинг
     # Бот отвечает на команды сразу, модель качается параллельно
-    preload_task = asyncio.create_task(preload_models())
+    preload_task = None
+    if _INPAINT_AVAILABLE:
+        preload_task = asyncio.create_task(preload_models())
 
     await stop_event.wait()
     polling_task.cancel()
-    preload_task.cancel()
+    if preload_task:
+        preload_task.cancel()
     try:
         await polling_task
     except asyncio.CancelledError:
         pass
-    try:
-        await preload_task
-    except asyncio.CancelledError:
-        pass
+    if preload_task:
+        try:
+            await preload_task
+        except asyncio.CancelledError:
+            pass
 
     await health_runner.cleanup()
     log.info("Бот остановлен.")
