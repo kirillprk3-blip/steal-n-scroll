@@ -71,10 +71,8 @@ async def main():
         "Канал-архив: %s", f"ID={config.TARGET_CHANNEL_ID}" if config.TARGET_CHANNEL_ID else "отключён"
     )
 
-    # Предзагрузка моделей (LaMa 208MB, OCR) — до polling
-    await preload_models()
-
     # HTTP health-check сервер (для Render.com — иначе уснёт через 15 мин)
+    # Запускаем ДО загрузки моделей, чтобы отвечать на пинг Render сразу
     port = int(os.getenv("PORT", 10000))
     health_app = web.Application()
 
@@ -109,10 +107,19 @@ async def main():
         dp.start_polling(bot, skip_updates=False)
     )
 
+    # Предзагрузка моделей (LaMa 208MB, OCR) — фоном, не блокируя поллинг
+    # Бот отвечает на команды сразу, модель качается параллельно
+    preload_task = asyncio.create_task(preload_models())
+
     await stop_event.wait()
     polling_task.cancel()
+    preload_task.cancel()
     try:
         await polling_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await preload_task
     except asyncio.CancelledError:
         pass
 
