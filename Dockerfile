@@ -8,15 +8,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Предзагрузка LaMa ONNX модели (208MB) — вшивается в образ, не скачивается при каждом рестарте
-RUN python3 -c "import urllib.request, os; \
-    d = 'data/models'; os.makedirs(d, exist_ok=True); \
-    p = os.path.join(d, 'big-lama.onnx'); \
-    print('Downloading LaMa ONNX model...'); \
-    urllib.request.urlretrieve('https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx', p); \
-    print(f'LaMa model: {os.path.getsize(p)} bytes')"
-
 COPY --chown=hoopbot:hoopbot . .
+
+# Модель LaMa (208MB) скачивается лениво при первом инпейнтинге (inpainter.py:_ensure_model()).
+# Не вшиваем в образ — на free tier Render билд падает по таймауту.
 
 RUN mkdir -p data && chown hoopbot:hoopbot data
 
