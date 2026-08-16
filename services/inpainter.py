@@ -17,8 +17,14 @@ import os
 import urllib.request
 from typing import Optional
 
-import cv2
-import numpy as np
+try:
+    import cv2
+    import numpy as np
+    _HAS_CV2_NUMPY = True
+except ImportError:
+    cv2 = None      # type: ignore
+    np = None       # type: ignore
+    _HAS_CV2_NUMPY = False
 
 log = logging.getLogger("hoopbot.inpainter")
 
@@ -39,7 +45,11 @@ def _init_ocr():
     """Инициализирует RapidOCR (однократно)."""
     global _ocr_instance
     if _ocr_instance is None:
-        from rapidocr_onnxruntime import RapidOCR
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+        except ImportError:
+            log.warning("RapidOCR не установлен (pip install rapidocr-onnxruntime)")
+            return None
         _ocr_instance = RapidOCR()
         log.info("RapidOCR initialized")
     return _ocr_instance
@@ -64,7 +74,11 @@ def _init_lama():
     if _lama_session is None:
         _ensure_model()
         log.info("Loading LaMa ONNX model from %s ...", _LAMA_MODEL_PATH)
-        import onnxruntime
+        try:
+            import onnxruntime
+        except ImportError:
+            log.warning("ONNX Runtime не установлен (pip install onnxruntime)")
+            return None
         _lama_session = onnxruntime.InferenceSession(
             _LAMA_MODEL_PATH,
             providers=["CPUExecutionProvider"],
@@ -77,13 +91,17 @@ def _init_lama():
 
 # ── OCR: bounding boxes → mask ────────────────────────────────────────────
 
-def _ocr_to_mask(img: np.ndarray) -> Optional[np.ndarray]:
+def _ocr_to_mask(img) -> Optional:
     """Распознаёт текст и возвращает бинарную маску (0/255).
 
     Returns:
         mask (H, W, uint8) или None если текст не найден.
     """
+    if not _HAS_CV2_NUMPY:
+        return None
     ocr = _init_ocr()
+    if ocr is None:
+        return None
     result, elapse = ocr(img)
     if not result:
         log.info("OCR: текстовые блоки не найдены, elapse=%.2f", elapse if elapse else 0)
@@ -176,6 +194,10 @@ def clean_image_text(image_bytes: bytes) -> bytes:
         При любой ошибке возвращает исходные байты без изменений.
     """
     try:
+        if not _HAS_CV2_NUMPY:
+            log.warning("Inpainting: cv2/numpy не установлены, возвращаю оригинал")
+            return image_bytes
+
         nparr = np.frombuffer(image_bytes, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         if img is None:
@@ -208,6 +230,9 @@ def clean_image_text(image_bytes: bytes) -> bytes:
 
         # 4. Инференс
         session = _init_lama()
+        if session is None:
+            log.warning("Inpainting: LaMa сессия не доступна, возвращаю оригинал")
+            return image_bytes
         log.info("Inpainting: запуск инференса LaMa...")
         output = session.run(
             ["output"],
