@@ -21,6 +21,7 @@ from aiogram.types import BotCommand
 from config import config
 from handlers.carousel import router
 from services.db import close_db, init_db, migrate_from_json
+from services.inpainter import preload_models
 
 logging.basicConfig(
     level=logging.INFO,
@@ -69,6 +70,9 @@ async def main():
     log.info(
         "Канал-архив: %s", f"ID={config.TARGET_CHANNEL_ID}" if config.TARGET_CHANNEL_ID else "отключён"
     )
+
+    # Предзагрузка моделей (LaMa 208MB, OCR) — до polling
+    await preload_models()
 
     # HTTP health-check сервер (для Render.com — иначе уснёт через 15 мин)
     port = int(os.getenv("PORT", 10000))

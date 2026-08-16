@@ -244,3 +244,31 @@ async def clean_image_text_async(image_bytes: bytes) -> bytes:
     result = await asyncio.to_thread(clean_image_text, image_bytes)
     log.info("Inpainting: clean_image_text_async done, returned %d bytes", len(result))
     return result
+
+
+async def ensure_model_async():
+    """Скачивает LaMa модель при старте бота (до polling).
+
+    Вызывается из bot.py, чтобы первый инпейнтинг не ждал 208MB загрузку.
+    """
+    log.info("Проверка LaMa модели при старте...")
+    if os.path.exists(_LAMA_MODEL_PATH):
+        sz = os.path.getsize(_LAMA_MODEL_PATH)
+        log.info("LaMa модель уже на месте: %s (%d MB)",
+                  _LAMA_MODEL_PATH, sz // (1024 * 1024))
+        return
+    await asyncio.to_thread(_ensure_model)
+    log.info("LaMa модель загружена при старте")
+
+
+async def preload_models():
+    """Предзагрузка всех моделей (OCR + LaMa) при старте бота.
+
+    ONNX сессия создаётся сразу, чтобы первый вызов был быстрым.
+    """
+    await ensure_model_async()
+    log.info("Инициализация RapidOCR при старте...")
+    await asyncio.to_thread(_init_ocr)
+    log.info("Инициализация LaMa ONNX при старте...")
+    await asyncio.to_thread(_init_lama)
+    log.info("Все модели предзагружены")
